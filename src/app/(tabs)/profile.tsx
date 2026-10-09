@@ -297,6 +297,22 @@ export default function ProfileScreen() {
             />
           )}
 
+          <View style={[styles.toggleRow, { marginTop: 8 }]}>
+            <View style={{ flex: 1, marginRight: 10 }}>
+              <Text style={[styles.toggleText, { color: colors.text, fontSize: 13 * fontScale }]}>
+                多模态视觉识图能力 (Vision)
+              </Text>
+              <Text style={[styles.subNote, { color: colors.textSecondary, fontSize: 11 * fontScale }]}>
+                开启后，图片查询与勾画识别将以视觉多模态格式提交
+              </Text>
+            </View>
+            <Switch
+              value={activeProvider.supports_vision}
+              onValueChange={(val) => updateProvider(activeProvider.id, { supports_vision: val })}
+              thumbColor={activeProvider.supports_vision ? colors.primary : undefined}
+            />
+          </View>
+
           {(isCustomBaseUrl || isCustomModelId) && (
             <Button
               title="保存自定义地址与模型"

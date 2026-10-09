@@ -1,4 +1,5 @@
 import { LLMProviderConfig, QueryResult, AIMessage, SelectedRegion } from '@/types';
+import * as FileSystem from 'expo-file-system';
 import {
   WORD_LOOKUP_SYSTEM_PROMPT,
   IMAGE_QUERY_SYSTEM_PROMPT,
@@ -271,6 +272,7 @@ export class LLMClient {
     if (apiKey && provider.supports_vision) {
       try {
         const url = `${provider.base_url.replace(/\/+$/, '')}/chat/completions`;
+        const dataUri = await this.ensureDataUri(imageBase64);
         const contentArray: any[] = [
           {
             type: 'text',
@@ -279,7 +281,7 @@ export class LLMClient {
           {
             type: 'image_url',
             image_url: {
-              url: imageBase64.startsWith('data:') ? imageBase64 : `data:image/jpeg;base64,${imageBase64}`,
+              url: dataUri,
             },
           },
         ];
@@ -510,6 +512,34 @@ ${currentQuery.recognized_text ? `图片识别上下文：${currentQuery.recogni
         },
       };
     }
+  }
+
+  /**
+   * Ensure image is converted to valid base64 data URI
+   */
+  private static async ensureDataUri(imageUriOrBase64: string): Promise<string> {
+    if (!imageUriOrBase64) return '';
+    if (imageUriOrBase64.startsWith('data:')) {
+      return imageUriOrBase64;
+    }
+    try {
+      if (
+        imageUriOrBase64.startsWith('file://') ||
+        imageUriOrBase64.startsWith('content://') ||
+        imageUriOrBase64.startsWith('/')
+      ) {
+        const base64 = await FileSystem.readAsStringAsync(imageUriOrBase64, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        return `data:image/jpeg;base64,${base64}`;
+      }
+    } catch (err) {
+      console.warn('Failed to read file as base64 in ensureDataUri:', err);
+    }
+    if (!imageUriOrBase64.includes('/') && !imageUriOrBase64.includes(':')) {
+      return `data:image/jpeg;base64,${imageUriOrBase64}`;
+    }
+    return imageUriOrBase64;
   }
 
   /**

@@ -31,11 +31,11 @@ export const INITIAL_NOTEBOOKS: Notebook[] = [
 export const PRESET_PROVIDERS: LLMProviderConfig[] = [
   {
     id: 'deepseek',
-    name: 'DeepSeek',
+    name: 'DeepSeek (Flash 多模态)',
     api_format: 'openai_compatible',
     base_url: 'https://api.deepseek.com',
-    model_id: 'deepseek-chat',
-    supports_vision: false,
+    model_id: 'deepseek-flash',
+    supports_vision: true,
     is_custom_base_url: false,
     is_custom_model_id: false,
   },

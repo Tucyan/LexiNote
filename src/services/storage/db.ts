@@ -143,7 +143,20 @@ export class DatabaseService {
         await AsyncStorage.setItem(KEYS.PROVIDERS, JSON.stringify(PRESET_PROVIDERS));
         return PRESET_PROVIDERS;
       }
-      return JSON.parse(raw);
+      const providers: LLMProviderConfig[] = JSON.parse(raw);
+      const updated = providers.map((p) => {
+        if (p.id === 'deepseek') {
+          return {
+            ...p,
+            name: 'DeepSeek (Flash 多模态)',
+            model_id: p.is_custom_model_id ? p.model_id : 'deepseek-flash',
+            supports_vision: true,
+          };
+        }
+        return p;
+      });
+      await AsyncStorage.setItem(KEYS.PROVIDERS, JSON.stringify(updated));
+      return updated;
     } catch (e) {
       console.error('Failed to get providers:', e);
       return PRESET_PROVIDERS;
