@@ -33,6 +33,8 @@ export default function VocabularyDetailScreen() {
     addAnnotation,
     deleteAnnotation,
     saveVocabulary,
+    updateVocabulary,
+    deleteVocabulary,
   } = useNotebooks();
 
   const vocab = vocabularies[id || ''];
@@ -40,6 +42,11 @@ export default function VocabularyDetailScreen() {
   // State for adding tag
   const [newTagInput, setNewTagInput] = useState('');
   const [isAddingTag, setIsAddingTag] = useState(false);
+
+  // State for editing word content itself
+  const [isEditingWord, setIsEditingWord] = useState(false);
+  const [editContentInput, setEditContentInput] = useState('');
+  const [editTypeInput, setEditTypeInput] = useState<'word' | 'phrase'>('word');
 
   // State for adding/editing meaning
   const [editingMeaningId, setEditingMeaningId] = useState<string | null>(null);
@@ -166,6 +173,44 @@ export default function VocabularyDetailScreen() {
     );
   };
 
+  const handleStartEditWord = () => {
+    if (!vocab) return;
+    setEditContentInput(vocab.content);
+    setEditTypeInput(vocab.type);
+    setIsEditingWord(true);
+  };
+
+  const handleSaveWordEdit = async () => {
+    if (!vocab || !editContentInput.trim()) {
+      Alert.alert('提示', '词汇文本内容不能为空');
+      return;
+    }
+    await updateVocabulary(vocab.id, {
+      content: editContentInput.trim(),
+      type: editTypeInput,
+    });
+    setIsEditingWord(false);
+  };
+
+  const handleDeleteEntireVocab = () => {
+    if (!vocab) return;
+    Alert.alert(
+      '彻底删除词汇',
+      `确定要彻底从词库中删除「${vocab.content}」吗？\n所有笔记分类中的引用也将一并清除。`,
+      [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '彻底删除',
+          style: 'destructive',
+          onPress: async () => {
+            await deleteVocabulary(vocab.id);
+            router.back();
+          },
+        },
+      ]
+    );
+  };
+
   return (
     <ScrollView
       style={[styles.container, { backgroundColor: colors.background }]}
@@ -173,23 +218,114 @@ export default function VocabularyDetailScreen() {
     >
       {/* Word Header Card */}
       <Card variant="elevated">
-        <View style={styles.headerRow}>
-          <View style={{ flex: 1 }}>
-            <Text style={[styles.wordTitle, { color: colors.text, fontSize: 26 * fontScale }]}>
-              {vocab.content}
+        {isEditingWord ? (
+          <View style={{ marginBottom: 12 }}>
+            <Text style={[styles.subHeading, { color: colors.textSecondary, fontSize: 12 * fontScale, marginBottom: 6 }]}>
+              修改词汇原文与类型：
             </Text>
-            {vocab.meanings[0]?.phonetic ? (
-              <Text style={[styles.phoneticText, { color: colors.textSecondary, fontSize: 15 * fontScale }]}>
-                {vocab.meanings[0].phonetic}
-              </Text>
-            ) : null}
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              <TextInput
+                value={editContentInput}
+                onChangeText={setEditContentInput}
+                placeholder="词汇文本拼写"
+                placeholderTextColor={colors.textMuted}
+                autoFocus
+                style={[
+                  styles.formInput,
+                  {
+                    flex: 1,
+                    color: colors.text,
+                    backgroundColor: colors.inputBg,
+                    borderColor: colors.primary,
+                    fontSize: 18 * fontScale,
+                    fontWeight: '700',
+                  },
+                ]}
+              />
+              <View style={{ flexDirection: 'row', borderWidth: 1, borderColor: colors.border, borderRadius: 8, overflow: 'hidden' }}>
+                <TouchableOpacity
+                  style={{
+                    paddingHorizontal: 10,
+                    paddingVertical: 8,
+                    backgroundColor: editTypeInput === 'word' ? colors.primaryLight : 'transparent',
+                  }}
+                  onPress={() => setEditTypeInput('word')}
+                >
+                  <Text style={{ color: editTypeInput === 'word' ? colors.primary : colors.textSecondary, fontWeight: '600', fontSize: 12 * fontScale }}>
+                    单词
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={{
+                    paddingHorizontal: 10,
+                    paddingVertical: 8,
+                    backgroundColor: editTypeInput === 'phrase' ? colors.primaryLight : 'transparent',
+                  }}
+                  onPress={() => setEditTypeInput('phrase')}
+                >
+                  <Text style={{ color: editTypeInput === 'phrase' ? colors.primary : colors.textSecondary, fontWeight: '600', fontSize: 12 * fontScale }}>
+                    短语
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            <View style={{ flexDirection: 'row', gap: 8 }}>
+              <Button
+                title="取消"
+                size="small"
+                variant="outline"
+                onPress={() => setIsEditingWord(false)}
+                style={{ flex: 1 }}
+              />
+              <Button
+                title="保存修改"
+                size="small"
+                variant="primary"
+                onPress={handleSaveWordEdit}
+                style={{ flex: 1 }}
+              />
+            </View>
           </View>
-          <Badge
-            label={vocab.type === 'phrase' ? '短语' : '单词'}
-            variant="primary"
-            size="medium"
-          />
-        </View>
+        ) : (
+          <View style={styles.headerRow}>
+            <View style={{ flex: 1 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
+                <Text style={[styles.wordTitle, { color: colors.text, fontSize: 26 * fontScale }]}>
+                  {vocab.content}
+                </Text>
+                <Badge
+                  label={vocab.type === 'phrase' ? '短语' : '单词'}
+                  variant="primary"
+                  size="small"
+                  style={{ marginLeft: 8 }}
+                />
+              </View>
+              {vocab.meanings[0]?.phonetic ? (
+                <Text style={[styles.phoneticText, { color: colors.textSecondary, fontSize: 15 * fontScale }]}>
+                  {vocab.meanings[0].phonetic}
+                </Text>
+              ) : null}
+            </View>
+
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <TouchableOpacity
+                onPress={handleStartEditWord}
+                style={{ padding: 6, borderRadius: 8, backgroundColor: colors.inputBg }}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Ionicons name="create-outline" size={19} color={colors.primary} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={handleDeleteEntireVocab}
+                style={{ padding: 6, borderRadius: 8, backgroundColor: 'rgba(239, 68, 68, 0.1)' }}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Ionicons name="trash-outline" size={18} color={colors.error} />
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
 
         {/* Tags */}
         <View style={styles.tagSection}>

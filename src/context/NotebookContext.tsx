@@ -37,7 +37,10 @@ interface NotebookContextType {
     vocabData: Partial<Vocabulary> & { content: string },
     options?: SaveVocabularyOptions
   ) => Promise<Vocabulary>;
+  updateVocabulary: (id: string, updates: Partial<Vocabulary>) => Promise<void>;
   deleteVocabulary: (vocabId: string, fromNotebookId?: string) => Promise<void>;
+  batchDeleteVocabularies: (vocabIds: string[], fromNotebookId?: string) => Promise<void>;
+  batchAddVocabulariesToNotebook: (vocabIds: string[], targetNotebookId: string) => Promise<void>;
   addMeaningToVocabulary: (vocabId: string, meaning: Meaning) => Promise<void>;
   updateMeaning: (vocabId: string, meaning: Meaning) => Promise<void>;
   deleteMeaning: (vocabId: string, meaningId: string) => Promise<void>;
@@ -349,6 +352,90 @@ export function NotebookProvider({ children }: { children: React.ReactNode }) {
     await DatabaseService.saveNotebooks(updatedNotebooks);
   };
 
+  /**
+   * Update vocabulary entity directly
+   */
+  const updateVocabulary = async (id: string, updates: Partial<Vocabulary>) => {
+    const existing = vocabularies[id];
+    if (!existing) return;
+    const now = new Date().toISOString();
+    const updatedVocab: Vocabulary = {
+      ...existing,
+      ...updates,
+      updated_at: now,
+    };
+    const updatedMap = {
+      ...vocabularies,
+      [id]: updatedVocab,
+    };
+    setVocabularies(updatedMap);
+    await DatabaseService.saveVocabularies(updatedMap);
+  };
+
+  /**
+   * Batch delete or remove vocabularies
+   */
+  const batchDeleteVocabularies = async (vocabIds: string[], fromNotebookId?: string) => {
+    if (!vocabIds.length) return;
+    const isRemoveRefOnly = fromNotebookId && fromNotebookId !== GLOBAL_ROOT_NOTEBOOK_ID;
+    const now = new Date().toISOString();
+    const idSet = new Set(vocabIds);
+
+    if (isRemoveRefOnly) {
+      const updatedNotebooks = notebooks.map((nb) => {
+        if (nb.id === fromNotebookId) {
+          return {
+            ...nb,
+            vocabulary_ids: nb.vocabulary_ids.filter((id) => !idSet.has(id)),
+            updated_at: now,
+          };
+        }
+        return nb;
+      });
+      setNotebooks(updatedNotebooks);
+      await DatabaseService.saveNotebooks(updatedNotebooks);
+      return;
+    }
+
+    // Completely delete from dictionary and all notebooks
+    const remainingVocabs = { ...vocabularies };
+    vocabIds.forEach((id) => {
+      delete remainingVocabs[id];
+    });
+    setVocabularies(remainingVocabs);
+    await DatabaseService.saveVocabularies(remainingVocabs);
+
+    const updatedNotebooks = notebooks.map((nb) => ({
+      ...nb,
+      vocabulary_ids: nb.vocabulary_ids.filter((id) => !idSet.has(id)),
+      updated_at: now,
+    }));
+    setNotebooks(updatedNotebooks);
+    await DatabaseService.saveNotebooks(updatedNotebooks);
+  };
+
+  /**
+   * Batch add vocabularies to a target notebook
+   */
+  const batchAddVocabulariesToNotebook = async (vocabIds: string[], targetNotebookId: string) => {
+    if (!vocabIds.length || targetNotebookId === GLOBAL_ROOT_NOTEBOOK_ID) return;
+    const now = new Date().toISOString();
+    const updatedNotebooks = notebooks.map((nb) => {
+      if (nb.id === targetNotebookId) {
+        const merged = Array.from(new Set([...nb.vocabulary_ids, ...vocabIds]));
+        return {
+          ...nb,
+          children_type: 'vocabulary' as ChildrenType,
+          vocabulary_ids: merged,
+          updated_at: now,
+        };
+      }
+      return nb;
+    });
+    setNotebooks(updatedNotebooks);
+    await DatabaseService.saveNotebooks(updatedNotebooks);
+  };
+
   const addMeaningToVocabulary = async (vocabId: string, meaning: Meaning) => {
     const vocab = vocabularies[vocabId];
     if (!vocab) return;
@@ -480,7 +567,10 @@ export function NotebookProvider({ children }: { children: React.ReactNode }) {
         updateNotebook,
         deleteNotebook,
         saveVocabulary,
+        updateVocabulary,
         deleteVocabulary,
+        batchDeleteVocabularies,
+        batchAddVocabulariesToNotebook,
         addMeaningToVocabulary,
         updateMeaning,
         deleteMeaning,
