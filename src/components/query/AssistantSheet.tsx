@@ -1,20 +1,21 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   View,
   Text,
+  Modal,
+  ScrollView,
   StyleSheet,
   TouchableOpacity,
-  ScrollView,
   TextInput,
-  Modal,
-  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
+  ActivityIndicator,
+  Alert,
 } from 'react-native';
-import { AIMessage, QueryResult } from '@/types';
+import { QueryResult, AIMessage } from '@/types';
 import { useTheme } from '@/context/ThemeContext';
 import { useSettings } from '@/context/SettingsContext';
-import { LLMClient } from '@/services/llm/client';
+import { LLMClient, LLMException } from '@/services/llm/client';
 import { generateId } from '@/utils/id';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -35,50 +36,98 @@ export function AssistantSheet({
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [inputText, setInputText] = useState('');
   const [isSending, setIsSending] = useState(false);
+  const scrollViewRef = useRef<ScrollView>(null);
 
   if (!currentQuery) return null;
 
   const handleSend = async () => {
-    if (!inputText.trim() || isSending) return;
+    const trimmedInput = inputText.trim();
+
+    // 1. Pre-validation checks for illegal operations
+    if (!trimmedInput) {
+      Alert.alert('⚠️ 非法操作', '提问内容不能为空，请输入具体问题后再发送。');
+      return;
+    }
+    if (trimmedInput.length > 2000) {
+      Alert.alert('⚠️ 非法操作', '提问内容过长（单次限制 2000 字符以内），请精简后重试。');
+      return;
+    }
+    if (isSending) {
+      return;
+    }
 
     const userMsg: AIMessage = {
       id: generateId('msg'),
       role: 'user',
-      content: inputText.trim(),
+      content: trimmedInput,
       created_at: new Date().toISOString(),
     };
 
-    const newMessages = [...messages, userMsg];
-    onMessagesChange(newMessages);
+    const assistantMsgId = generateId('msg');
+    const assistantPlaceholder: AIMessage = {
+      id: assistantMsgId,
+      role: 'assistant',
+      content: '',
+      created_at: new Date().toISOString(),
+    };
+
+    const messagesWithUser = [...messages, userMsg];
+    const initialList = [...messagesWithUser, assistantPlaceholder];
+    onMessagesChange(initialList);
     setInputText('');
     setIsSending(true);
 
+    let accumulatedContent = '';
+
     try {
-      const reply = await LLMClient.sendChatMessage(
-        newMessages,
+      const finalReply = await LLMClient.sendChatMessage(
+        messagesWithUser,
         currentQuery,
         activeProvider,
-        activeApiKey
+        activeApiKey,
+        (chunkText) => {
+          accumulatedContent += chunkText;
+          onMessagesChange(
+            [...messagesWithUser, {
+              id: assistantMsgId,
+              role: 'assistant',
+              content: accumulatedContent,
+              created_at: new Date().toISOString(),
+            }]
+          );
+          // Auto scroll to bottom
+          scrollViewRef.current?.scrollToEnd({ animated: true });
+        }
       );
 
-      const assistantMsg: AIMessage = {
-        id: generateId('msg'),
-        role: 'assistant',
-        content: reply,
-        created_at: new Date().toISOString(),
-      };
-
-      onMessagesChange([...newMessages, assistantMsg]);
+      // Finalize message with complete content
+      onMessagesChange(
+        [...messagesWithUser, {
+          id: assistantMsgId,
+          role: 'assistant',
+          content: finalReply || accumulatedContent,
+          created_at: new Date().toISOString(),
+        }]
+      );
     } catch (e: any) {
-      const errorMsg: AIMessage = {
-        id: generateId('msg'),
-        role: 'assistant',
-        content: `回答出错: ${e.message || '请检查网络或 API 配置'}`,
-        created_at: new Date().toISOString(),
-      };
-      onMessagesChange([...newMessages, errorMsg]);
+      let errorText = '';
+      if (e instanceof LLMException) {
+        errorText = `⚠️ ${e.message}\n\n💡 建议操作：\n${e.suggestion || '请检查设置并重试。'}`;
+      } else {
+        errorText = `⚠️ 回答出错: ${e.message || '请检查网络或 API 配置'}`;
+      }
+
+      onMessagesChange(
+        [...messagesWithUser, {
+          id: assistantMsgId,
+          role: 'assistant',
+          content: errorText,
+          created_at: new Date().toISOString(),
+        }]
+      );
     } finally {
       setIsSending(false);
+      scrollViewRef.current?.scrollToEnd({ animated: true });
     }
   };
 
@@ -113,7 +162,7 @@ export function AssistantSheet({
         >
           {messages.length > 0
             ? messages[messages.length - 1].content
-            : '点击展开对话，提问语境用法、助记技巧或近义辨析...'}
+            : '点击展开流式对话，提问语境用法、助记技巧或近义辨析...'}
         </Text>
       </View>
       <Ionicons name="chevron-up" size={18} color={colors.textSecondary} />
@@ -146,9 +195,14 @@ export function AssistantSheet({
               <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                 <Ionicons name="sparkles" size={20} color={colors.primary} style={{ marginRight: 8 }} />
                 <View>
-                  <Text style={[styles.headerTitle, { color: colors.text, fontSize: 16 * fontScale }]}>
-                    AI 助手 · {currentQuery.word}
-                  </Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Text style={[styles.headerTitle, { color: colors.text, fontSize: 16 * fontScale }]}>
+                      AI 助手 · {currentQuery.word}
+                    </Text>
+                    <View style={styles.streamBadge}>
+                      <Text style={styles.streamBadgeText}>流式传输</Text>
+                    </View>
+                  </View>
                   <Text style={[styles.headerSub, { color: colors.textSecondary, fontSize: 11 * fontScale }]}>
                     已绑定当前词汇与释义上下文
                   </Text>
@@ -159,6 +213,7 @@ export function AssistantSheet({
                 <TouchableOpacity
                   onPress={() => setIsFullScreen(!isFullScreen)}
                   style={styles.headerBtn}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 >
                   <Ionicons
                     name={isFullScreen ? 'contract-outline' : 'expand-outline'}
@@ -166,7 +221,11 @@ export function AssistantSheet({
                     color={colors.textSecondary}
                   />
                 </TouchableOpacity>
-                <TouchableOpacity onPress={() => setIsExpanded(false)} style={styles.headerBtn}>
+                <TouchableOpacity
+                  onPress={() => setIsExpanded(false)}
+                  style={styles.headerBtn}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
                   <Ionicons name="close" size={24} color={colors.textSecondary} />
                 </TouchableOpacity>
               </View>
@@ -180,6 +239,7 @@ export function AssistantSheet({
                   '容易混淆的近义词',
                   '如何用联想记忆法记住它？',
                   '在英美剧中常见的口语搭配',
+                  '词根词缀及衍生词剖析',
                 ].map((prompt, i) => (
                   <TouchableOpacity
                     key={i}
@@ -195,7 +255,12 @@ export function AssistantSheet({
             </View>
 
             {/* Chat Messages */}
-            <ScrollView style={styles.messagesList} contentContainerStyle={{ padding: 16 }}>
+            <ScrollView
+              ref={scrollViewRef}
+              style={styles.messagesList}
+              contentContainerStyle={{ padding: 16, paddingBottom: 24 }}
+              onContentSizeChange={() => scrollViewRef.current?.scrollToEnd({ animated: true })}
+            >
               {messages.length === 0 ? (
                 <View style={styles.emptyMessages}>
                   <Ionicons name="chatbubbles-outline" size={40} color={colors.textMuted} />
@@ -204,36 +269,48 @@ export function AssistantSheet({
                   </Text>
                 </View>
               ) : (
-                messages.map((m) => (
-                  <View
-                    key={m.id}
-                    style={[
-                      styles.messageBubble,
-                      m.role === 'user'
-                        ? [styles.userBubble, { backgroundColor: colors.primary }]
-                        : [styles.assistantBubble, { backgroundColor: colors.inputBg, borderColor: colors.border }],
-                    ]}
-                  >
-                    <Text
+                messages.map((m, idx) => {
+                  const isLast = idx === messages.length - 1;
+                  const isCurrentStreaming = isSending && isLast && m.role === 'assistant';
+
+                  return (
+                    <View
+                      key={m.id}
                       style={[
-                        styles.bubbleText,
-                        {
-                          color: m.role === 'user' ? '#FFFFFF' : colors.text,
-                          fontSize: 13.5 * fontScale,
-                        },
+                        styles.messageBubble,
+                        m.role === 'user'
+                          ? [styles.userBubble, { backgroundColor: colors.primary }]
+                          : [styles.assistantBubble, { backgroundColor: colors.inputBg, borderColor: colors.border }],
                       ]}
                     >
-                      {m.content}
-                    </Text>
-                  </View>
-                ))
+                      {m.role === 'assistant' && !m.content && isCurrentStreaming ? (
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 4 }}>
+                          <ActivityIndicator size="small" color={colors.primary} />
+                          <Text style={{ color: colors.textSecondary, fontSize: 12.5 * fontScale }}>
+                            AI 正在思考并组织语言...
+                          </Text>
+                        </View>
+                      ) : (
+                        <Text
+                          style={[
+                            styles.bubbleText,
+                            {
+                              color: m.role === 'user' ? '#FFFFFF' : colors.text,
+                              fontSize: 13.5 * fontScale,
+                              lineHeight: 20 * fontScale,
+                            },
+                          ]}
+                        >
+                          {m.content}
+                          {isCurrentStreaming ? (
+                            <Text style={{ color: colors.primary, fontWeight: '700' }}> ▋</Text>
+                          ) : null}
+                        </Text>
+                      )}
+                    </View>
+                  );
+                })
               )}
-
-              {isSending ? (
-                <View style={[styles.assistantBubble, { backgroundColor: colors.inputBg, width: 80, padding: 12 }]}>
-                  <ActivityIndicator size="small" color={colors.primary} />
-                </View>
-              ) : null}
             </ScrollView>
 
             {/* Input Bar */}
@@ -243,30 +320,39 @@ export function AssistantSheet({
                 onChangeText={setInputText}
                 placeholder={`询问关于 "${currentQuery.word}" 的任何问题...`}
                 placeholderTextColor={colors.textMuted}
+                multiline
+                maxLength={2000}
                 style={[
                   styles.chatInput,
                   {
                     color: colors.text,
                     backgroundColor: colors.inputBg,
                     borderColor: colors.border,
-                    fontSize: 14 * fontScale,
+                    fontSize: 13.5 * fontScale,
                   },
                 ]}
                 onSubmitEditing={handleSend}
               />
               <TouchableOpacity
+                onPress={handleSend}
+                disabled={!inputText.trim() || isSending}
                 style={[
                   styles.sendBtn,
-                  { backgroundColor: inputText.trim() ? colors.primary : colors.inputBg },
+                  {
+                    backgroundColor: inputText.trim() && !isSending ? colors.primary : colors.inputBg,
+                  },
                 ]}
-                disabled={!inputText.trim() || isSending}
-                onPress={handleSend}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
-                <Ionicons
-                  name="arrow-up"
-                  size={20}
-                  color={inputText.trim() ? '#FFFFFF' : colors.textMuted}
-                />
+                {isSending ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Ionicons
+                    name="arrow-up"
+                    size={18}
+                    color={inputText.trim() ? '#FFFFFF' : colors.textMuted}
+                  />
+                )}
               </TouchableOpacity>
             </View>
           </View>
@@ -315,7 +401,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   sheetContent: {
-    height: '70%',
+    height: '74%',
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     borderWidth: 1,
@@ -334,6 +420,17 @@ const styles = StyleSheet.create({
   headerTitle: {
     fontWeight: '700',
   },
+  streamBadge: {
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 4,
+  },
+  streamBadgeText: {
+    color: '#10B981',
+    fontSize: 10,
+    fontWeight: '600',
+  },
   headerSub: {
     marginTop: 2,
   },
@@ -348,7 +445,7 @@ const styles = StyleSheet.create({
   },
   quickChip: {
     paddingHorizontal: 12,
-    paddingVertical: 5,
+    paddingVertical: 6,
     borderRadius: 16,
     borderWidth: 1,
     marginRight: 8,
@@ -367,12 +464,14 @@ const styles = StyleSheet.create({
   emptyPrompt: {
     marginTop: 10,
     textAlign: 'center',
+    lineHeight: 18,
   },
   messageBubble: {
-    padding: 12,
-    borderRadius: 14,
-    marginBottom: 10,
     maxWidth: '85%',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 16,
+    marginBottom: 10,
   },
   userBubble: {
     alignSelf: 'flex-end',
@@ -384,7 +483,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   bubbleText: {
-    lineHeight: 20,
+    fontWeight: '400',
   },
   inputBar: {
     flexDirection: 'row',
@@ -394,17 +493,18 @@ const styles = StyleSheet.create({
   },
   chatInput: {
     flex: 1,
-    borderRadius: 22,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
     borderWidth: 1,
-    marginRight: 10,
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    maxHeight: 100,
   },
   sendBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
+    marginLeft: 8,
   },
 });

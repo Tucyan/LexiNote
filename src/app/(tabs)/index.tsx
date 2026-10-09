@@ -21,7 +21,7 @@ import { useTheme } from '@/context/ThemeContext';
 import { useNotebooks } from '@/context/NotebookContext';
 import { useSettings } from '@/context/SettingsContext';
 import { useHistory } from '@/context/HistoryContext';
-import { LLMClient } from '@/services/llm/client';
+import { LLMClient, LLMException } from '@/services/llm/client';
 import { generateId } from '@/utils/id';
 
 import { QueryInputSection } from '@/components/query/QueryInputSection';
@@ -242,7 +242,12 @@ export default function SearchAndRecordScreen() {
           });
         }
       } catch (e: any) {
-        Alert.alert('查询失败', e?.message || '无法获取查询结果');
+        if (e instanceof LLMException) {
+          const alertInfo = e.getFormattedAlert();
+          Alert.alert(alertInfo.title, alertInfo.message);
+        } else {
+          Alert.alert('查询失败', e?.message || '无法获取查询结果');
+        }
       } finally {
         setLoading(false);
       }
@@ -300,7 +305,12 @@ export default function SearchAndRecordScreen() {
         updateQueryHistory(currentQueryId, { query_results: updatedResult });
       }
     } catch (err: any) {
-      Alert.alert('AI补充失败', err?.message || '请检查网络');
+      if (err instanceof LLMException) {
+        const alertInfo = err.getFormattedAlert();
+        Alert.alert(alertInfo.title, alertInfo.message);
+      } else {
+        Alert.alert('AI补充失败', err?.message || '请检查网络');
+      }
     } finally {
       setLoading(false);
     }

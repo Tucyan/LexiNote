@@ -12,7 +12,7 @@ import { useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { useTheme } from '@/context/ThemeContext';
 import { useSettings } from '@/context/SettingsContext';
-import { LLMClient } from '@/services/llm/client';
+import { LLMClient, LLMException } from '@/services/llm/client';
 import { SelectedRegion } from '@/types';
 import { RegionDrawer } from '@/components/query/RegionDrawer';
 import { GuessClueCard } from '@/components/guess/GuessClueCard';
@@ -78,16 +78,23 @@ export default function GuessScreen() {
   const handleStartGuess = async () => {
     if (inputMode === 'text') {
       if (!targetWord.trim()) {
-        Alert.alert('提示', '请输入需要猜测的目标单词或短语');
+        Alert.alert('⚠️ 非法操作', '目标词汇不能为空，请输入需要猜测的生词或短语。');
         return;
       }
       if (!contextSentence.trim()) {
-        Alert.alert('提示', '请输入该词所在的上下文例句，以便进行语境推测');
+        Alert.alert('⚠️ 非法操作', '猜词需借助语境推测，请输入该词所在的上下文例句或段落。');
         return;
       }
     } else {
       if (!imageUri) {
-        Alert.alert('提示', '请先拍照或选取包含目标单词的图片');
+        Alert.alert('⚠️ 非法操作', '请先拍照或从相册选择包含目标生词的图片。');
+        return;
+      }
+      if (!activeProvider.supports_vision && !targetWord.trim()) {
+        Alert.alert(
+          '⚠️ 视觉识图未开启',
+          `当前配置的模型「${activeProvider.model_id}」未启用视觉识别能力。\n请在下方输入框中手动填入目标单词，或在「我的」设置中切换为多模态视觉模型。`
+        );
         return;
       }
     }
@@ -115,7 +122,12 @@ export default function GuessScreen() {
 
       setClues([stage1]);
     } catch (e: any) {
-      Alert.alert('猜词启动失败', e?.message || '无法获取提示');
+      if (e instanceof LLMException) {
+        const alertInfo = e.getFormattedAlert();
+        Alert.alert(alertInfo.title, alertInfo.message);
+      } else {
+        Alert.alert('猜词启动失败', e?.message || '无法获取提示');
+      }
     } finally {
       setLoading(false);
     }
@@ -143,7 +155,12 @@ export default function GuessScreen() {
 
       setClues([...clues, nextClue]);
     } catch (e: any) {
-      Alert.alert('获取下一阶段提示失败', e?.message || '网络连接异常');
+      if (e instanceof LLMException) {
+        const alertInfo = e.getFormattedAlert();
+        Alert.alert(alertInfo.title, alertInfo.message);
+      } else {
+        Alert.alert('获取下一阶段提示失败', e?.message || '网络连接异常');
+      }
     } finally {
       setLoadingNext(false);
     }

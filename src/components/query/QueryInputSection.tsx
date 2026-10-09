@@ -10,6 +10,7 @@ import {
 import * as ImagePicker from 'expo-image-picker';
 import { QueryType, SelectedRegion } from '@/types';
 import { useTheme } from '@/context/ThemeContext';
+import { useSettings } from '@/context/SettingsContext';
 import { RegionDrawer } from './RegionDrawer';
 import { Ionicons } from '@expo/vector-icons';
 import { Button } from '../common/Button';
@@ -71,19 +72,40 @@ export function QueryInputSection({
     }
   };
 
+  const { activeProvider } = useSettings();
+
   const handleSubmit = () => {
     if (activeMode === 'text') {
-      if (!textInput.trim()) {
-        Alert.alert('提示', '请输入要查询的单词或短语');
+      const clean = textInput.trim();
+      if (!clean) {
+        Alert.alert('⚠️ 非法操作', '查询内容不能为空，请输入需要查询的英文单词或短语。');
+        return;
+      }
+      if (clean.length > 3000) {
+        Alert.alert('⚠️ 非法操作', '输入内容过长（单次限制 3000 字符以内），请截取核心句子或重点单词后再试。');
         return;
       }
       onSearch({
         queryType: 'text',
-        text: textInput.trim(),
+        text: clean,
       });
     } else if (activeMode === 'image') {
       if (!imageUri) {
-        Alert.alert('提示', '请先拍照或从相册选择图片');
+        Alert.alert('⚠️ 非法操作', '请先拍照或从手机相册选择包含英文文本的图片。');
+        return;
+      }
+      if (!activeProvider.supports_vision) {
+        Alert.alert(
+          '⚠️ 当前模型不支持识图',
+          `当前配置的 AI 模型「${activeProvider.model_id}」为纯文本模型，未启用多模态视觉能力。\n\n建议操作：\n1. 前往「我的 -> 供应商配置」开启「多模态视觉模型支持」；\n2. 或切换至“图文结合”模式附加文字说明后再查询。`,
+          [
+            { text: '知道了', style: 'cancel' },
+            {
+              text: '切换图文结合模式',
+              onPress: () => setActiveMode('both'),
+            },
+          ]
+        );
         return;
       }
       onSearch({
@@ -93,13 +115,18 @@ export function QueryInputSection({
       });
     } else {
       // Both
-      if (!imageUri && !textInput.trim()) {
-        Alert.alert('提示', '请至少输入文字或选择一张图片');
+      const clean = textInput.trim();
+      if (!imageUri && !clean) {
+        Alert.alert('⚠️ 非法操作', '图文结合模式下，请至少输入文字说明或选择一张待解析的图片。');
+        return;
+      }
+      if (clean.length > 3000) {
+        Alert.alert('⚠️ 非法操作', '附带说明文字过长（限制 3000 字符以内），请精简后重试。');
         return;
       }
       onSearch({
         queryType: 'both',
-        text: textInput.trim(),
+        text: clean || undefined,
         imageUri: imageUri || undefined,
         region: selectedRegion,
       });

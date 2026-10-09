@@ -8,8 +8,10 @@ import {
   Modal,
   PanResponder,
   LayoutChangeEvent,
-  SafeAreaView,
+  Platform,
+  StatusBar,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { SelectedRegion } from '@/types';
 import { useTheme } from '@/context/ThemeContext';
 import { Ionicons } from '@expo/vector-icons';
@@ -26,6 +28,7 @@ type InteractionMode = 'zoom' | 'draw';
 
 export function RegionDrawer({ imageUri, region, onRegionChange }: RegionDrawerProps) {
   const { colors, fontScale } = useTheme();
+  const insets = useSafeAreaInsets();
   const [modalVisible, setModalVisible] = useState(false);
 
   // Active interaction mode inside enlarged preview modal
@@ -39,14 +42,26 @@ export function RegionDrawer({ imageUri, region, onRegionChange }: RegionDrawerP
   const [draftRegion, setDraftRegion] = useState<SelectedRegion | undefined>(region);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
 
+  // Cropping undo history stack
+  const [cropHistory, setCropHistory] = useState<(SelectedRegion | undefined)[]>([]);
+
   // Touch tracking refs
   const panStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const dragStartInnerRef = useRef<{ x: number; y: number } | null>(null);
   const lastTouchTimeRef = useRef<number>(0);
-  const pinchDistanceRef = useRef<number | null>(null);
+  const pinchStartDistRef = useRef<number | null>(null);
+  const pinchStartScaleRef = useRef<number>(1.0);
+  const canvasLayoutRef = useRef<{ pageX: number; pageY: number }>({ pageX: 0, pageY: 0 });
+
+  // Calculate safe status bar padding so top buttons never conflict with notch/status bar
+  const safeTopPadding = Math.max(
+    insets.top,
+    Platform.OS === 'android' ? (StatusBar.currentHeight || 28) : 24
+  ) + 12;
 
   const handleOpenModal = () => {
     setDraftRegion(region);
+    setCropHistory(region ? [region] : []);
     setZoomScale(1.0);
     setPanOffset({ x: 0, y: 0 });
     setInteractMode('zoom');
@@ -64,7 +79,27 @@ export function RegionDrawer({ imageUri, region, onRegionChange }: RegionDrawerP
   };
 
   const handleClearDraft = () => {
+    if (draftRegion) {
+      setCropHistory((prev) => [...prev, draftRegion]);
+    }
     setDraftRegion(undefined);
+  };
+
+  // Crop action: locks in the drawn region as cropped focus and pushes to undo stack
+  const handleApplyCrop = () => {
+    if (!draftRegion) return;
+    setCropHistory((prev) => [...prev, draftRegion]);
+    // Optionally zoom in to fit the cropped area
+    const fitScale = Math.min(3.5, Math.max(1.5, 100 / Math.max(draftRegion.width, draftRegion.height, 20)));
+    setZoomScale(Number(fitScale.toFixed(1)));
+  };
+
+  // Undo crop action: pops the previous state from history stack
+  const handleUndoCrop = () => {
+    if (cropHistory.length === 0) return;
+    const previous = cropHistory[cropHistory.length - 1];
+    setDraftRegion(previous);
+    setCropHistory((prev) => prev.slice(0, prev.length - 1));
   };
 
   const handleResetView = () => {
@@ -73,7 +108,7 @@ export function RegionDrawer({ imageUri, region, onRegionChange }: RegionDrawerP
   };
 
   const handleZoomIn = () => {
-    setZoomScale((prev) => Math.min(4.0, Number((prev + 0.4).toFixed(1))));
+    setZoomScale((prev) => Math.min(5.0, Number((prev + 0.4).toFixed(1))));
   };
 
   const handleZoomOut = () => {
@@ -109,7 +144,8 @@ export function RegionDrawer({ imageUri, region, onRegionChange }: RegionDrawerP
   };
 
   /**
-   * PanResponder handling both Zoom/Pan Mode and Draw Mode
+   * PanResponder handling both Zoom/Pan Mode (single finger pan + two-finger pinch zoom)
+   * and Draw Mode (precise bounding box selection)
    */
   const panResponder = PanResponder.create({
     onStartShouldSetPanResponder: () => true,
@@ -118,12 +154,12 @@ export function RegionDrawer({ imageUri, region, onRegionChange }: RegionDrawerP
     onPanResponderGrant: (evt) => {
       const touches = evt.nativeEvent.touches;
 
-      // Handle double tap to toggle zoom in zoom mode
+      // Handle double tap to quickly toggle zoom in zoom mode
       if (interactMode === 'zoom' && touches.length === 1) {
         const now = Date.now();
         if (now - lastTouchTimeRef.current < 280) {
           // Double tap detected
-          setZoomScale((prev) => (prev > 1.2 ? 1.0 : 2.2));
+          setZoomScale((prev) => (prev > 1.2 ? 1.0 : 2.5));
           if (zoomScale > 1.2) setPanOffset({ x: 0, y: 0 });
           lastTouchTimeRef.current = 0;
           return;
@@ -134,14 +170,16 @@ export function RegionDrawer({ imageUri, region, onRegionChange }: RegionDrawerP
       if (interactMode === 'zoom') {
         if (touches.length === 1) {
           panStartRef.current = {
-            x: touches[0].locationX - panOffset.x,
-            y: touches[0].locationY - panOffset.y,
+            x: touches[0].pageX - panOffset.x,
+            y: touches[0].pageY - panOffset.y,
           };
+          pinchStartDistRef.current = null;
         } else if (touches.length >= 2) {
-          // Pinch start
+          // Two finger pinch start
           const dx = touches[0].pageX - touches[1].pageX;
           const dy = touches[0].pageY - touches[1].pageY;
-          pinchDistanceRef.current = Math.sqrt(dx * dx + dy * dy);
+          pinchStartDistRef.current = Math.hypot(dx, dy);
+          pinchStartScaleRef.current = zoomScale;
         }
       } else {
         // Draw Mode: record start coordinate in image percentage space
@@ -156,26 +194,44 @@ export function RegionDrawer({ imageUri, region, onRegionChange }: RegionDrawerP
 
       if (interactMode === 'zoom') {
         if (touches.length === 1) {
-          // Single-finger panning
-          if (zoomScale > 1.0) {
-            const nextX = touches[0].locationX - panStartRef.current.x;
-            const nextY = touches[0].locationY - panStartRef.current.y;
-            // Bound pan offset based on zoom level
-            const maxPanX = (canvasSize.width * (zoomScale - 1)) / 1.5;
-            const maxPanY = (canvasSize.height * (zoomScale - 1)) / 1.5;
-            setPanOffset({
-              x: Math.max(-maxPanX, Math.min(maxPanX, nextX)),
-              y: Math.max(-maxPanY, Math.min(maxPanY, nextY)),
-            });
+          // Single-finger dragging: smooth panning across entire screen
+          if (pinchStartDistRef.current !== null) {
+            // Finger transitioned from 2 to 1: re-anchor pan start without jumping
+            panStartRef.current = {
+              x: touches[0].pageX - panOffset.x,
+              y: touches[0].pageY - panOffset.y,
+            };
+            pinchStartDistRef.current = null;
+            return;
           }
-        } else if (touches.length >= 2 && pinchDistanceRef.current !== null) {
-          // Two-finger pinch zoom
+
+          const nextX = touches[0].pageX - panStartRef.current.x;
+          const nextY = touches[0].pageY - panStartRef.current.y;
+
+          // Pan bounds based on current zoom level
+          const maxPanX = (canvasSize.width * (zoomScale - 1)) / 1.4 + 40;
+          const maxPanY = (canvasSize.height * (zoomScale - 1)) / 1.4 + 40;
+          setPanOffset({
+            x: Math.max(-maxPanX, Math.min(maxPanX, nextX)),
+            y: Math.max(-maxPanY, Math.min(maxPanY, nextY)),
+          });
+        } else if (touches.length >= 2) {
+          // Two-finger pinch to zoom
           const dx = touches[0].pageX - touches[1].pageX;
           const dy = touches[0].pageY - touches[1].pageY;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-          const ratio = dist / pinchDistanceRef.current;
-          setZoomScale((prev) => Math.max(1.0, Math.min(4.0, Number((prev * ratio).toFixed(2)))));
-          pinchDistanceRef.current = dist;
+          const dist = Math.hypot(dx, dy);
+
+          if (pinchStartDistRef.current === null) {
+            pinchStartDistRef.current = dist;
+            pinchStartScaleRef.current = zoomScale;
+          } else {
+            const scaleMultiplier = dist / pinchStartDistRef.current;
+            const targetScale = Math.max(
+              1.0,
+              Math.min(5.0, Number((pinchStartScaleRef.current * scaleMultiplier).toFixed(2)))
+            );
+            setZoomScale(targetScale);
+          }
         }
       } else {
         // Draw Mode: compute bounding box in image percentage space
@@ -202,7 +258,11 @@ export function RegionDrawer({ imageUri, region, onRegionChange }: RegionDrawerP
 
     onPanResponderRelease: () => {
       dragStartInnerRef.current = null;
-      pinchDistanceRef.current = null;
+      pinchStartDistRef.current = null;
+    },
+    onPanResponderTerminate: () => {
+      dragStartInnerRef.current = null;
+      pinchStartDistRef.current = null;
     },
   });
 
@@ -216,19 +276,25 @@ export function RegionDrawer({ imageUri, region, onRegionChange }: RegionDrawerP
             已选图片
           </Text>
           {region ? (
-            <Badge label="已勾画重点区域" variant="primary" size="small" style={{ marginLeft: 8 }} />
+            <Badge label="已裁剪/勾画重点" variant="primary" size="small" style={{ marginLeft: 8 }} />
           ) : (
             <Badge label="整图提取" variant="neutral" size="small" style={{ marginLeft: 8 }} />
           )}
         </View>
 
         {region ? (
-          <TouchableOpacity style={styles.clearBtn} onPress={() => onRegionChange(undefined)}>
-            <Ionicons name="trash-outline" size={14} color={colors.error} />
-            <Text style={[styles.clearBtnText, { color: colors.error, fontSize: 12 * fontScale }]}>
-              清除勾画
-            </Text>
-          </TouchableOpacity>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <TouchableOpacity
+              style={styles.clearBtn}
+              onPress={() => onRegionChange(undefined)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Ionicons name="trash-outline" size={14} color={colors.error} />
+              <Text style={[styles.clearBtnText, { color: colors.error, fontSize: 12 * fontScale }]}>
+                清除裁剪
+              </Text>
+            </TouchableOpacity>
+          </View>
         ) : null}
       </View>
 
@@ -266,7 +332,7 @@ export function RegionDrawer({ imageUri, region, onRegionChange }: RegionDrawerP
         <View style={styles.clickToEnlargeBar}>
           <Ionicons name="expand-outline" size={15} color="#FFFFFF" />
           <Text style={styles.clickToEnlargeText}>
-            {region ? '点击放大预览 / 重新勾画' : '点击放大预览并勾画重点区域'}
+            {region ? '点击放大预览 / 调整裁剪与勾画' : '点击放大预览、缩放查看并勾画重点区域'}
           </Text>
         </View>
       </TouchableOpacity>
@@ -278,10 +344,17 @@ export function RegionDrawer({ imageUri, region, onRegionChange }: RegionDrawerP
         presentationStyle="fullScreen"
         onRequestClose={handleCancelModal}
       >
-        <SafeAreaView style={[styles.modalSafe, { backgroundColor: '#0A0F1D' }]}>
-          {/* Top Bar with Mode Switcher Segmented Control */}
+        <View style={[styles.modalSafe, { backgroundColor: '#0B1120', paddingTop: safeTopPadding }]}>
+          <StatusBar barStyle="light-content" translucent backgroundColor="transparent" />
+
+          {/* Top Bar with Mode Switcher & Safe Distance from Status Bar */}
           <View style={styles.modalTopBar}>
-            <TouchableOpacity onPress={handleCancelModal} style={styles.modalCloseBtn}>
+            {/* Close Button with generous touch area */}
+            <TouchableOpacity
+              onPress={handleCancelModal}
+              style={styles.modalCloseBtn}
+              hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
+            >
               <Ionicons name="close" size={24} color="#94A3B8" />
             </TouchableOpacity>
 
@@ -293,6 +366,7 @@ export function RegionDrawer({ imageUri, region, onRegionChange }: RegionDrawerP
                   interactMode === 'zoom' && [styles.modeSegmentActive, { backgroundColor: colors.primary }],
                 ]}
                 onPress={() => setInteractMode('zoom')}
+                hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
               >
                 <Ionicons
                   name="search-outline"
@@ -315,6 +389,7 @@ export function RegionDrawer({ imageUri, region, onRegionChange }: RegionDrawerP
                   interactMode === 'draw' && [styles.modeSegmentActive, { backgroundColor: colors.primary }],
                 ]}
                 onPress={() => setInteractMode('draw')}
+                hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
               >
                 <Ionicons
                   name="crop-outline"
@@ -332,23 +407,42 @@ export function RegionDrawer({ imageUri, region, onRegionChange }: RegionDrawerP
               </TouchableOpacity>
             </View>
 
-            <TouchableOpacity style={styles.doneTopBtn} onPress={handleConfirmModal}>
+            {/* Confirm & Done Button with generous touch area */}
+            <TouchableOpacity
+              style={styles.doneTopBtn}
+              onPress={handleConfirmModal}
+              hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
+            >
               <Text style={[styles.doneTopText, { color: colors.primary }]}>完成</Text>
             </TouchableOpacity>
           </View>
 
-          {/* Mode Instructions Banner */}
+          {/* Mode Instructions & Crop Undo Banner */}
           <View style={styles.instructionBanner}>
-            <Ionicons
-              name={interactMode === 'zoom' ? 'information-circle-outline' : 'pencil-outline'}
-              size={15}
-              color={interactMode === 'zoom' ? '#38BDF8' : colors.primary}
-            />
-            <Text style={styles.instructionBannerText}>
-              {interactMode === 'zoom'
-                ? '【放大移动模式】：可单指拖动视野、双击或下方按钮缩放图片，方便查看小字'
-                : '【精准框选模式】：视野已锁定，手指在目标单词/句子上滑动即可精准框选'}
-            </Text>
+            <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}>
+              <Ionicons
+                name={interactMode === 'zoom' ? 'hand-right-outline' : 'pencil-outline'}
+                size={15}
+                color={interactMode === 'zoom' ? '#38BDF8' : colors.primary}
+              />
+              <Text style={styles.instructionBannerText}>
+                {interactMode === 'zoom'
+                  ? '【放大移动】：单指拖动视野，双指捏合缩放（支持1.0x-5.0x），双击快速缩放'
+                  : '【精准框选】：单指直接拖动拉取选框，精准框选目标词汇段落'}
+              </Text>
+            </View>
+
+            {/* Quick Undo Crop in banner if available */}
+            {cropHistory.length > 0 && (
+              <TouchableOpacity
+                style={styles.bannerUndoBtn}
+                onPress={handleUndoCrop}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Ionicons name="arrow-undo-outline" size={13} color="#F59E0B" />
+                <Text style={styles.bannerUndoText}>撤回裁剪</Text>
+              </TouchableOpacity>
+            )}
           </View>
 
           {/* Large Interactive Canvas */}
@@ -404,19 +498,20 @@ export function RegionDrawer({ imageUri, region, onRegionChange }: RegionDrawerP
                         },
                       ]}
                     >
-                      <Text style={styles.modalBoxTagText}>目标重点词汇</Text>
+                      <Text style={styles.modalBoxTagText}>重点目标区域</Text>
                     </View>
                   </View>
                 )}
               </View>
             )}
 
-            {/* Floating Zoom Controls Pill */}
+            {/* Floating Zoom & Scale Controls Pill */}
             <View style={styles.floatingZoomControls}>
               <TouchableOpacity
                 style={styles.zoomCtrlBtn}
                 onPress={handleZoomOut}
                 disabled={zoomScale <= 1.0}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
                 <Ionicons
                   name="remove"
@@ -425,24 +520,33 @@ export function RegionDrawer({ imageUri, region, onRegionChange }: RegionDrawerP
                 />
               </TouchableOpacity>
 
-              <TouchableOpacity style={styles.zoomLevelPill} onPress={handleResetView}>
+              <TouchableOpacity
+                style={styles.zoomLevelPill}
+                onPress={handleResetView}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
                 <Text style={styles.zoomLevelText}>{Math.round(zoomScale * 100)}%</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
                 style={styles.zoomCtrlBtn}
                 onPress={handleZoomIn}
-                disabled={zoomScale >= 4.0}
+                disabled={zoomScale >= 5.0}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
                 <Ionicons
                   name="add"
                   size={18}
-                  color={zoomScale >= 4.0 ? '#475569' : '#F8FAFC'}
+                  color={zoomScale >= 5.0 ? '#475569' : '#F8FAFC'}
                 />
               </TouchableOpacity>
 
               {zoomScale > 1.0 && (
-                <TouchableOpacity style={styles.resetViewBtn} onPress={handleResetView}>
+                <TouchableOpacity
+                  style={styles.resetViewBtn}
+                  onPress={handleResetView}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
                   <Ionicons name="scan-outline" size={14} color="#94A3B8" />
                   <Text style={styles.resetViewText}>复位</Text>
                 </TouchableOpacity>
@@ -450,30 +554,59 @@ export function RegionDrawer({ imageUri, region, onRegionChange }: RegionDrawerP
             </View>
           </View>
 
-          {/* Bottom Bar Controls */}
-          <View style={styles.modalBottomBar}>
+          {/* Bottom Bar: Crop, Undo & Finalize Controls */}
+          <View style={[styles.modalBottomBar, { paddingBottom: Math.max(insets.bottom, 16) }]}>
             <View style={styles.bottomLeftAction}>
+              {/* Undo Crop Button */}
+              {cropHistory.length > 0 && (
+                <TouchableOpacity
+                  style={styles.undoActionBtn}
+                  onPress={handleUndoCrop}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Ionicons name="arrow-undo-outline" size={16} color="#F59E0B" />
+                  <Text style={styles.undoActionText}>撤回裁剪</Text>
+                </TouchableOpacity>
+              )}
+
+              {/* Clear Box Button */}
               {draftRegion ? (
-                <TouchableOpacity style={styles.clearDraftBtn} onPress={handleClearDraft}>
+                <TouchableOpacity
+                  style={styles.clearDraftBtn}
+                  onPress={handleClearDraft}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
                   <Ionicons name="trash-outline" size={15} color="#EF4444" />
-                  <Text style={styles.clearDraftText}>清除勾画</Text>
+                  <Text style={styles.clearDraftText}>清除选框</Text>
                 </TouchableOpacity>
               ) : (
-                <Text style={styles.noRegionText}>未勾画（识别整张图片）</Text>
+                <Text style={styles.noRegionText}>未选区域（识别整图）</Text>
               )}
             </View>
 
             <View style={styles.bottomRightAction}>
+              {/* Optional Crop Confirmation Button */}
+              {draftRegion && (
+                <TouchableOpacity
+                  style={[styles.cropConfirmBtn, { backgroundColor: 'rgba(16, 185, 129, 0.15)', borderColor: colors.primary }]}
+                  onPress={handleApplyCrop}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Ionicons name="crop" size={14} color={colors.primary} />
+                  <Text style={[styles.cropConfirmText, { color: colors.primary }]}>裁剪聚焦</Text>
+                </TouchableOpacity>
+              )}
+
               <Button
                 title="取消"
                 variant="ghost"
                 size="small"
                 onPress={handleCancelModal}
                 textStyle={{ color: '#94A3B8' }}
-                style={{ marginRight: 8 }}
+                style={{ marginRight: 6 }}
               />
               <Button
-                title="确认勾画并使用"
+                title="确认并使用"
                 variant="primary"
                 size="small"
                 onPress={handleConfirmModal}
@@ -481,7 +614,7 @@ export function RegionDrawer({ imageUri, region, onRegionChange }: RegionDrawerP
               />
             </View>
           </View>
-        </SafeAreaView>
+        </View>
       </Modal>
     </View>
   );
@@ -504,8 +637,8 @@ const styles = StyleSheet.create({
   clearBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 2,
-    paddingHorizontal: 6,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
   },
   clearBtnText: {
     marginLeft: 4,
@@ -549,7 +682,7 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    backgroundColor: 'rgba(15, 23, 42, 0.75)',
+    backgroundColor: 'rgba(15, 23, 42, 0.78)',
     paddingVertical: 8,
     flexDirection: 'row',
     alignItems: 'center',
@@ -570,74 +703,95 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
     borderBottomWidth: 1,
     borderBottomColor: '#1E293B',
+    minHeight: 52,
   },
   modalCloseBtn: {
-    padding: 6,
+    padding: 8,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
   },
   modeSegmentContainer: {
     flexDirection: 'row',
     backgroundColor: '#1E293B',
-    borderRadius: 20,
+    borderRadius: 22,
     padding: 3,
+    borderWidth: 1,
+    borderColor: '#334155',
   },
   modeSegmentBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 18,
+    gap: 5,
   },
   modeSegmentActive: {
     shadowColor: '#000',
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-    elevation: 2,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3,
+    elevation: 3,
   },
   modeSegmentText: {
     fontSize: 12.5,
-    fontWeight: '600',
-    marginLeft: 4,
+    fontWeight: '700',
   },
   doneTopBtn: {
-    paddingVertical: 6,
-    paddingHorizontal: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
   },
   doneTopText: {
-    fontWeight: '700',
     fontSize: 14,
+    fontWeight: '700',
   },
   instructionBanner: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#131D31',
+    justifyContent: 'space-between',
+    backgroundColor: '#0F172A',
     paddingHorizontal: 14,
-    paddingVertical: 6,
+    paddingVertical: 8,
     borderBottomWidth: 1,
     borderBottomColor: '#1E293B',
   },
   instructionBannerText: {
-    color: '#CBD5E1',
+    color: '#94A3B8',
     fontSize: 11.5,
     marginLeft: 6,
     flex: 1,
   },
+  bannerUndoBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+    gap: 3,
+    marginLeft: 6,
+  },
+  bannerUndoText: {
+    color: '#F59E0B',
+    fontSize: 11,
+    fontWeight: '700',
+  },
   modalCanvasContainer: {
     flex: 1,
-    width: '100%',
-    position: 'relative',
     backgroundColor: '#020617',
-    justifyContent: 'center',
-    alignItems: 'center',
+    position: 'relative',
     overflow: 'hidden',
   },
   transformWrapper: {
     position: 'absolute',
-    top: 0,
     left: 0,
+    top: 0,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -648,98 +802,129 @@ const styles = StyleSheet.create({
   modalBoundingBox: {
     position: 'absolute',
     borderStyle: 'dashed',
-    borderRadius: 4,
+    borderRadius: 8,
   },
   modalBoxTag: {
     position: 'absolute',
     top: -20,
     left: 0,
     paddingHorizontal: 6,
-    paddingVertical: 1,
-    borderRadius: 3,
+    paddingVertical: 2,
+    borderRadius: 4,
   },
   modalBoxTagText: {
     color: '#FFFFFF',
-    fontSize: 9.5,
+    fontSize: 10,
     fontWeight: '700',
   },
-
-  // Floating Zoom Controls
   floatingZoomControls: {
     position: 'absolute',
+    right: 14,
     bottom: 16,
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(30, 41, 59, 0.88)',
+    backgroundColor: 'rgba(15, 23, 42, 0.88)',
     borderRadius: 24,
-    paddingHorizontal: 8,
-    paddingVertical: 5,
+    paddingHorizontal: 4,
+    paddingVertical: 3,
     borderWidth: 1,
     borderColor: '#334155',
-    elevation: 4,
-    shadowColor: '#000',
-    shadowOpacity: 0.3,
-    shadowRadius: 6,
+    gap: 4,
   },
   zoomCtrlBtn: {
-    padding: 6,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#1E293B',
   },
   zoomLevelPill: {
     paddingHorizontal: 8,
-    paddingVertical: 2,
+    paddingVertical: 4,
   },
   zoomLevelText: {
     color: '#F8FAFC',
+    fontSize: 12,
     fontWeight: '700',
-    fontSize: 12.5,
   },
   resetViewBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderLeftWidth: 1,
-    borderLeftColor: '#475569',
-    paddingLeft: 8,
-    marginLeft: 4,
-    paddingVertical: 2,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    gap: 2,
   },
   resetViewText: {
     color: '#94A3B8',
     fontSize: 11,
-    marginLeft: 3,
     fontWeight: '600',
   },
-
-  // Modal Bottom Bar
   modalBottomBar: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    backgroundColor: '#0B1120',
+    paddingHorizontal: 14,
+    paddingTop: 12,
     borderTopWidth: 1,
     borderTopColor: '#1E293B',
-    backgroundColor: '#0F172A',
   },
   bottomLeftAction: {
-    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  undoActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+    gap: 4,
+  },
+  undoActionText: {
+    color: '#F59E0B',
+    fontSize: 12,
+    fontWeight: '700',
   },
   clearDraftBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+    gap: 4,
   },
   clearDraftText: {
     color: '#EF4444',
-    marginLeft: 4,
+    fontSize: 12,
     fontWeight: '600',
-    fontSize: 12.5,
   },
   noRegionText: {
     color: '#64748B',
-    fontSize: 11.5,
+    fontSize: 12,
   },
   bottomRightAction: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 6,
+  },
+  cropConfirmBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: 4,
+  },
+  cropConfirmText: {
+    fontSize: 12,
+    fontWeight: '700',
   },
 });
