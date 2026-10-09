@@ -29,7 +29,6 @@ interface OrganizeModalProps {
     targetNotebookIds: string[];
     userAnnotation?: string;
   }) => void;
-  saveToDefaultOnly?: boolean;
 }
 
 export function OrganizeModal({
@@ -38,23 +37,11 @@ export function OrganizeModal({
   notebooks,
   onClose,
   onConfirmSave,
-  saveToDefaultOnly = false,
 }: OrganizeModalProps) {
   const { colors, fontScale } = useTheme();
   const { settings } = useSettings();
 
-  // Field selections
-  const [fields, setFields] = useState<SaveFieldSelection>({
-    ...settings.default_fields_to_save,
-    zh_definition: true, // mandatory
-  });
-
-  // Editable meanings
-  const [draftMeanings, setDraftMeanings] = useState<QueryMeaningDraft[]>(
-    result.meanings.map((m) => ({ ...m, selected: m.selected !== false }))
-  );
-
-  // Target notebooks (filtered to exclude global root as it is auto-synced)
+  // Target notebooks (filtered to exclude global root)
   const availableNotebooks = notebooks.filter((n) => n.id !== GLOBAL_ROOT_NOTEBOOK_ID);
   const [targetNotebookIds, setTargetNotebookIds] = useState<string[]>([
     settings.default_notebook_id || (availableNotebooks[0]?.id ?? 'nb_default'),
@@ -63,35 +50,10 @@ export function OrganizeModal({
   // Optional custom annotation / remark
   const [customAnnotation, setCustomAnnotation] = useState('');
 
-  const toggleField = (key: keyof SaveFieldSelection) => {
-    if (key === 'zh_definition') {
-      // Mandatory per PRD
-      Alert.alert('提示', '释义为必填项，无法取消勾选');
-      return;
-    }
-    setFields((prev) => ({ ...prev, [key]: !prev[key] }));
-  };
-
-  const toggleMeaningSelected = (index: number) => {
-    setDraftMeanings((prev) => {
-      const updated = [...prev];
-      updated[index] = { ...updated[index], selected: !updated[index].selected };
-      return updated;
-    });
-  };
-
-  const updateMeaningField = (index: number, key: keyof QueryMeaningDraft, val: string) => {
-    setDraftMeanings((prev) => {
-      const updated = [...prev];
-      updated[index] = { ...updated[index], [key]: val };
-      return updated;
-    });
-  };
-
   const toggleNotebook = (id: string) => {
     if (targetNotebookIds.includes(id)) {
       if (targetNotebookIds.length === 1) {
-        Alert.alert('提示', '至少选择一个保存的笔记分类');
+        Alert.alert('提示', '至少需选择一个目标笔记本');
         return;
       }
       setTargetNotebookIds(targetNotebookIds.filter((nid) => nid !== id));
@@ -100,17 +62,42 @@ export function OrganizeModal({
     }
   };
 
+  const selectedMeanings = result.meanings.filter((m) => m.selected !== false);
+
   const handleSave = () => {
-    const selectedMeanings = draftMeanings.filter((m) => m.selected);
     if (selectedMeanings.length === 0) {
-      Alert.alert('提示', '请至少勾选一条要保存的释义');
+      Alert.alert('提示', '请在查看页面至少勾选保留一条释义');
       return;
     }
 
+    if (targetNotebookIds.length === 0) {
+      Alert.alert('提示', '请选择至少一个目标笔记分类');
+      return;
+    }
+
+    // Process definitions according to user's direct choice on the view page (中英文二选一)
+    const finalizedMeanings: QueryMeaningDraft[] = selectedMeanings.map((m) => {
+      const choice = m.definition_choice || 'zh';
+      return {
+        ...m,
+        zh_definition: choice === 'en' ? '' : m.zh_definition,
+        en_definition: choice === 'zh' ? '' : m.en_definition,
+      };
+    });
+
     onConfirmSave({
       word: result.word,
-      meanings: selectedMeanings,
-      selectedFields: fields,
+      meanings: finalizedMeanings,
+      selectedFields: {
+        zh_definition: true,
+        en_definition: true,
+        phonetic: !!result.phonetic,
+        example: true,
+        source: true,
+        source_images: true,
+        annotations: !!customAnnotation.trim(),
+        remarks: true,
+      },
       targetNotebookIds,
       userAnnotation: customAnnotation.trim() || undefined,
     });
@@ -118,269 +105,114 @@ export function OrganizeModal({
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <View style={styles.backdrop}>
-        <View style={[styles.modalSheet, { backgroundColor: colors.surface }]}>
+      <View style={styles.modalBackdrop}>
+        <View style={[styles.modalSheet, { backgroundColor: colors.surface, borderColor: colors.border }]}>
           {/* Header */}
-          <View style={[styles.modalHeader, { borderBottomColor: colors.border }]}>
+          <View style={[styles.header, { borderBottomColor: colors.border }]}>
             <View>
-              <Text style={[styles.title, { color: colors.text, fontSize: 18 * fontScale }]}>
-                整理与保存笔记
+              <Text style={[styles.title, { color: colors.text, fontSize: 17 * fontScale }]}>
+                选择存入笔记本
               </Text>
-              <Text style={[styles.subtitle, { color: colors.textSecondary, fontSize: 12 * fontScale }]}>
-                自主勾选待存字段，可自由补充编辑
+              <Text style={[styles.subTitle, { color: colors.textSecondary, fontSize: 12 * fontScale }]}>
+                目标词汇：「{result.word}」 · 已选 {selectedMeanings.length} 条释义
               </Text>
             </View>
-            <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
+            <TouchableOpacity onPress={onClose} style={styles.closeBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
               <Ionicons name="close" size={24} color={colors.textSecondary} />
             </TouchableOpacity>
           </View>
 
-          <ScrollView style={styles.scrollBody} contentContainerStyle={{ paddingBottom: 30 }}>
-            {/* Word Preview */}
-            <Card variant="flat" style={{ backgroundColor: colors.inputBg, marginBottom: 12 }}>
-              <Text style={[styles.wordLabel, { color: colors.primary, fontSize: 18 * fontScale }]}>
-                {result.word}
-              </Text>
-              {result.phonetic ? (
-                <Text style={[styles.phoneticLabel, { color: colors.textSecondary }]}>
-                  {result.phonetic}
-                </Text>
-              ) : null}
-            </Card>
-
-            {/* Field Toggles Section */}
-            <Text style={[styles.sectionHeading, { color: colors.text, fontSize: 14 * fontScale }]}>
-              1. 勾选保存字段
+          <ScrollView style={styles.content} contentContainerStyle={{ padding: 16 }}>
+            {/* Notebook Selector */}
+            <Text style={[styles.sectionHeading, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>
+              目标分类笔记本
             </Text>
-            <View style={styles.fieldsGrid}>
-              {[
-                { key: 'zh_definition', label: '中文释义 (必选)', mandatory: true },
-                { key: 'en_definition', label: '英文释义' },
-                { key: 'phonetic', label: '国际音标' },
-                { key: 'example', label: '典型例句' },
-                { key: 'source', label: '来源片段' },
-                { key: 'remarks', label: 'AI备注' },
-                { key: 'annotations', label: '批注信息' },
-              ].map((item) => (
-                <TouchableOpacity
-                  key={item.key}
-                  style={[
-                    styles.fieldCheckbox,
-                    {
-                      backgroundColor: fields[item.key as keyof SaveFieldSelection]
-                        ? colors.primaryLight
-                        : colors.inputBg,
-                      borderColor: fields[item.key as keyof SaveFieldSelection]
-                        ? colors.primary
-                        : colors.border,
-                    },
-                  ]}
-                  onPress={() => toggleField(item.key as keyof SaveFieldSelection)}
-                >
-                  <Ionicons
-                    name={
-                      fields[item.key as keyof SaveFieldSelection]
-                        ? 'checkbox'
-                        : 'square-outline'
-                    }
-                    size={16}
-                    color={
-                      fields[item.key as keyof SaveFieldSelection]
-                        ? colors.primary
-                        : colors.textSecondary
-                    }
-                  />
-                  <Text
-                    style={[
-                      styles.fieldCheckText,
-                      {
-                        color: fields[item.key as keyof SaveFieldSelection]
-                          ? colors.primary
-                          : colors.textSecondary,
-                        fontSize: 12 * fontScale,
-                      },
-                    ]}
-                  >
-                    {item.label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
 
-            {/* Meanings Selection & Editing */}
-            <Text style={[styles.sectionHeading, { color: colors.text, fontSize: 14 * fontScale, marginTop: 16 }]}>
-              2. 释义选择与修改 (共 {draftMeanings.length} 条)
-            </Text>
-            {draftMeanings.map((m, idx) => (
-              <Card
-                key={m.id || idx}
-                variant="outlined"
-                style={{
-                  marginBottom: 10,
-                  borderColor: m.selected ? colors.primary : colors.border,
-                }}
-              >
-                <View style={styles.meaningCardHeader}>
+            <View style={styles.notebookGrid}>
+              {availableNotebooks.map((nb) => {
+                const isChecked = targetNotebookIds.includes(nb.id);
+                return (
                   <TouchableOpacity
-                    style={styles.meaningCheckboxRow}
-                    onPress={() => toggleMeaningSelected(idx)}
+                    key={nb.id}
+                    style={[
+                      styles.notebookItem,
+                      isChecked
+                        ? {
+                            backgroundColor: colors.primaryLight + '25',
+                            borderColor: colors.primary,
+                            borderWidth: 1.5,
+                          }
+                        : {
+                            backgroundColor: colors.inputBg,
+                            borderColor: colors.border,
+                            borderWidth: 1,
+                          },
+                    ]}
+                    onPress={() => toggleNotebook(nb.id)}
+                    activeOpacity={0.7}
                   >
                     <Ionicons
-                      name={m.selected ? 'checkbox' : 'square-outline'}
-                      size={20}
-                      color={m.selected ? colors.primary : colors.textMuted}
+                      name={isChecked ? 'checkmark-circle' : 'ellipse-outline'}
+                      size={18}
+                      color={isChecked ? colors.primary : colors.textTertiary}
+                      style={{ marginRight: 8 }}
                     />
                     <Text
+                      numberOfLines={1}
                       style={[
-                        styles.meaningSelectLabel,
+                        styles.notebookName,
                         {
-                          color: m.selected ? colors.primary : colors.textMuted,
-                          fontSize: 13 * fontScale,
+                          color: isChecked ? colors.primary : colors.text,
+                          fontWeight: isChecked ? '700' : '500',
+                          fontSize: 13.5 * fontScale,
                         },
                       ]}
                     >
-                      释义项 {idx + 1} {m.part_of_speech ? `(${m.part_of_speech})` : ''}
+                      {nb.name}
                     </Text>
+                    {nb.id === settings.default_notebook_id ? (
+                      <View style={[styles.defaultBadge, { backgroundColor: colors.primaryLight }]}>
+                        <Text style={[styles.defaultBadgeText, { color: colors.primary, fontSize: 10 * fontScale }]}>
+                          默认
+                        </Text>
+                      </View>
+                    ) : null}
                   </TouchableOpacity>
-                </View>
+                );
+              })}
+            </View>
 
-                {m.selected ? (
-                  <View style={{ marginTop: 8 }}>
-                    <TextInput
-                      value={m.zh_definition}
-                      onChangeText={(t) => updateMeaningField(idx, 'zh_definition', t)}
-                      placeholder="中文释义"
-                      placeholderTextColor={colors.textMuted}
-                      style={[
-                        styles.fieldInput,
-                        {
-                          color: colors.text,
-                          backgroundColor: colors.inputBg,
-                          borderColor: colors.border,
-                        },
-                      ]}
-                    />
-
-                    {fields.en_definition ? (
-                      <TextInput
-                        value={m.en_definition}
-                        onChangeText={(t) => updateMeaningField(idx, 'en_definition', t)}
-                        placeholder="英文释义"
-                        placeholderTextColor={colors.textMuted}
-                        style={[
-                          styles.fieldInput,
-                          {
-                            color: colors.text,
-                            backgroundColor: colors.inputBg,
-                            borderColor: colors.border,
-                            marginTop: 6,
-                          },
-                        ]}
-                      />
-                    ) : null}
-
-                    {fields.example ? (
-                      <TextInput
-                        value={m.example}
-                        onChangeText={(t) => updateMeaningField(idx, 'example', t)}
-                        placeholder="例句"
-                        placeholderTextColor={colors.textMuted}
-                        style={[
-                          styles.fieldInput,
-                          {
-                            color: colors.text,
-                            backgroundColor: colors.inputBg,
-                            borderColor: colors.border,
-                            marginTop: 6,
-                          },
-                        ]}
-                      />
-                    ) : null}
-                  </View>
-                ) : null}
-              </Card>
-            ))}
-
-            {/* Custom Annotation / Note */}
-            <Text style={[styles.sectionHeading, { color: colors.text, fontSize: 14 * fontScale, marginTop: 14 }]}>
-              3. 自定义个人批注 / 备注
+            {/* Optional Personal Note / Remark */}
+            <Text style={[styles.sectionHeading, { color: colors.textSecondary, fontSize: 13 * fontScale, marginTop: 16 }]}>
+              添加个性批注 / 备忘（可选）
             </Text>
             <TextInput
-              value={customAnnotation}
-              onChangeText={setCustomAnnotation}
-              placeholder="添加你对该词的记忆口诀、使用心得或特殊语境批注..."
-              placeholderTextColor={colors.textMuted}
-              multiline
-              numberOfLines={3}
               style={[
-                styles.textArea,
+                styles.annotationInput,
                 {
-                  color: colors.text,
                   backgroundColor: colors.inputBg,
                   borderColor: colors.border,
+                  color: colors.text,
+                  fontSize: 13.5 * fontScale,
                 },
               ]}
+              placeholder="例如：在某篇论文阅读时遇到的高频考点..."
+              placeholderTextColor={colors.textTertiary}
+              value={customAnnotation}
+              onChangeText={setCustomAnnotation}
+              multiline
+              numberOfLines={2}
             />
-
-            {/* Notebook Destination */}
-            {!saveToDefaultOnly && (
-              <>
-                <Text style={[styles.sectionHeading, { color: colors.text, fontSize: 14 * fontScale, marginTop: 16 }]}>
-                  4. 保存目标笔记分类
-                </Text>
-                <View style={styles.notebookChipContainer}>
-                  {availableNotebooks.map((nb) => {
-                    const isSelected = targetNotebookIds.includes(nb.id);
-                    return (
-                      <TouchableOpacity
-                        key={nb.id}
-                        style={[
-                          styles.notebookChip,
-                          {
-                            backgroundColor: isSelected ? colors.primaryLight : colors.inputBg,
-                            borderColor: isSelected ? colors.primary : colors.border,
-                          },
-                        ]}
-                        onPress={() => toggleNotebook(nb.id)}
-                      >
-                        <Ionicons
-                          name={isSelected ? 'checkmark-circle' : 'book-outline'}
-                          size={15}
-                          color={isSelected ? colors.primary : colors.textSecondary}
-                        />
-                        <Text
-                          style={[
-                            styles.notebookChipText,
-                            {
-                              color: isSelected ? colors.primary : colors.textSecondary,
-                              fontSize: 12 * fontScale,
-                            },
-                          ]}
-                        >
-                          {nb.name} {nb.is_default ? '(默认)' : ''}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-              </>
-            )}
           </ScrollView>
 
-          {/* Footer Actions */}
-          <View style={[styles.modalFooter, { borderTopColor: colors.border }]}>
+          {/* Bottom Confirmation Bar */}
+          <View style={[styles.footer, { borderTopColor: colors.border, backgroundColor: colors.surface }]}>
+            <Button title="取消" variant="outline" onPress={onClose} style={{ flex: 1, marginRight: 10 }} />
             <Button
-              title="取消"
-              variant="outline"
-              onPress={onClose}
-              style={{ flex: 1, marginRight: 10 }}
-            />
-            <Button
-              title="确认保存到词库"
+              title={`确定保存 (${selectedMeanings.length} 条释义)`}
               variant="primary"
               onPress={handleSave}
               style={{ flex: 2 }}
-              icon={<Ionicons name="checkmark-done" size={16} color="#FFFFFF" />}
             />
           </View>
         </View>
@@ -390,111 +222,73 @@ export function OrganizeModal({
 }
 
 const styles = StyleSheet.create({
-  backdrop: {
+  modalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.5)',
     justifyContent: 'flex-end',
   },
   modalSheet: {
+    height: '62%',
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    maxHeight: '88%',
-    minHeight: '65%',
+    borderWidth: 1,
+    overflow: 'hidden',
   },
-  modalHeader: {
+  header: {
     flexDirection: 'row',
-    alignItems: 'center',
     justifyContent: 'space-between',
+    alignItems: 'center',
     padding: 16,
     borderBottomWidth: 1,
   },
   title: {
     fontWeight: '700',
   },
-  subtitle: {
-    marginTop: 2,
+  subTitle: {
+    marginTop: 3,
   },
   closeBtn: {
     padding: 4,
   },
-  scrollBody: {
-    padding: 16,
-  },
-  wordLabel: {
-    fontWeight: '800',
-  },
-  phoneticLabel: {
-    marginTop: 2,
-    fontFamily: 'monospace',
+  content: {
+    flex: 1,
   },
   sectionHeading: {
     fontWeight: '700',
     marginBottom: 8,
   },
-  fieldsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+  notebookGrid: {
     gap: 8,
   },
-  fieldCheckbox: {
+  notebookItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
   },
-  fieldCheckText: {
+  notebookName: {
+    flex: 1,
+  },
+  defaultBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
     marginLeft: 6,
-    fontWeight: '600',
   },
-  meaningCardHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  meaningCheckboxRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  meaningSelectLabel: {
-    marginLeft: 8,
+  defaultBadgeText: {
     fontWeight: '700',
   },
-  fieldInput: {
-    borderRadius: 8,
+  annotationInput: {
     borderWidth: 1,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    fontSize: 13,
-  },
-  textArea: {
-    borderRadius: 8,
-    borderWidth: 1,
+    borderRadius: 10,
     padding: 10,
-    minHeight: 65,
+    height: 70,
     textAlignVertical: 'top',
   },
-  notebookChipContainer: {
+  footer: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginTop: 4,
-  },
-  notebookChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 7,
-    paddingHorizontal: 12,
-    borderRadius: 16,
-    borderWidth: 1,
-  },
-  notebookChipText: {
-    marginLeft: 6,
-    fontWeight: '600',
-  },
-  modalFooter: {
-    flexDirection: 'row',
-    padding: 16,
+    padding: 14,
     borderTopWidth: 1,
   },
 });

@@ -1,4 +1,12 @@
-import { LLMProviderConfig, QueryResult, AIMessage, SelectedRegion } from '@/types';
+import {
+  LLMProviderConfig,
+  QueryResult,
+  AIMessage,
+  SelectedRegion,
+  QueryFeedback,
+  QueryFeedbackType,
+  QuerySuggestionItem,
+} from '@/types';
 import * as FileSystem from 'expo-file-system';
 import {
   WORD_LOOKUP_SYSTEM_PROMPT,
@@ -155,6 +163,26 @@ export class LLMClient {
   }
 
   /**
+   * Helper: Default titles for LLM input feedback types
+   */
+  static getDefaultFeedbackTitle(type: QueryFeedbackType): string {
+    switch (type) {
+      case 'misspelling':
+        return '单词可能存在拼写错误';
+      case 'long_text':
+        return '检测到长篇英文段落';
+      case 'irrelevant_content':
+        return '内容偏离英语词汇学习';
+      case 'gibberish':
+        return '未识别有效词汇内容';
+      case 'chinese_lookup':
+        return '已为您匹配对应英文词汇';
+      default:
+        return '输入内容提示';
+    }
+  }
+
+  /**
    * Test API connectivity
    */
   static async testConnection(
@@ -286,14 +314,62 @@ export class LLMClient {
 
         const json = await response.json();
         const content = json.choices?.[0]?.message?.content || '';
-        const parsed = this.cleanAndParseJSON<QueryResult>(content);
+        const parsed = this.cleanAndParseJSON<any>(content);
 
-        if (parsed && parsed.word) {
+        // 1. Check if LLM returned structured error or suggestion feedback
+        if (
+          parsed &&
+          (parsed.status === 'error' ||
+            parsed.error_type ||
+            (Array.isArray(parsed.suggestions) &&
+              parsed.suggestions.length > 0 &&
+              (!parsed.meanings || parsed.meanings.length === 0)))
+        ) {
+          const feedbackType: QueryFeedbackType = (parsed.error_type as QueryFeedbackType) || 'misspelling';
+          const suggestions: QuerySuggestionItem[] = (parsed.suggestions || [])
+            .map((s: any) => ({
+              word: typeof s === 'string' ? s : (s.word || ''),
+              zh_hint: typeof s === 'object' ? s.zh_hint : undefined,
+              reason: typeof s === 'object' ? s.reason : undefined,
+            }))
+            .filter((s: QuerySuggestionItem) => s.word && s.word.trim().length > 0);
+
+          const suggestedWords: string[] =
+            Array.isArray(parsed.suggested_words) && parsed.suggested_words.length > 0
+              ? parsed.suggested_words
+              : suggestions.map((s) => s.word);
+
+          const feedback: QueryFeedback = {
+            type: feedbackType,
+            title: parsed.title || this.getDefaultFeedbackTitle(feedbackType),
+            message: parsed.message || '输入内容需调整，请参考下方建议。',
+            original_input: parsed.original_input || trimmed,
+            suggestions,
+            suggested_words: suggestedWords,
+            action_hint: parsed.action_hint || '点击候选词即可一键查询',
+          };
+
           return {
-            word: parsed.word,
-            type: parsed.type || (parsed.word.includes(' ') ? 'phrase' : 'word'),
+            word: parsed.word || trimmed,
+            type: 'word',
+            phonetic: '',
+            meanings: [],
+            recognized_text: parsed.recognized_text || '',
+            raw_explanation: feedback.message,
+            is_invalid: true,
+            feedback,
+            is_from_local: false,
+          };
+        }
+
+        // 2. Normal successful word / phrase result
+        if (parsed && (parsed.word || (parsed.meanings && parsed.meanings.length > 0))) {
+          const word = parsed.word || trimmed;
+          return {
+            word,
+            type: parsed.type || (word.includes(' ') ? 'phrase' : 'word'),
             phonetic: parsed.phonetic || '',
-            meanings: (parsed.meanings || []).map((m, idx) => ({
+            meanings: (parsed.meanings || []).map((m: any, idx: number) => ({
               id: m.id || generateId(`m${idx}`),
               part_of_speech: m.part_of_speech || '',
               zh_definition: m.zh_definition || '',
@@ -302,6 +378,7 @@ export class LLMClient {
               source: m.source || 'AI 查询',
               remarks: m.remarks || '',
               selected: true,
+              definition_choice: 'zh',
             })),
             recognized_text: parsed.recognized_text || '',
             raw_explanation: parsed.raw_explanation || '',
@@ -466,7 +543,7 @@ export class LLMClient {
           word: parsed.word,
           type: parsed.type || 'word',
           phonetic: parsed.phonetic || '',
-          meanings: (parsed.meanings || []).map((m, idx) => ({
+          meanings: (parsed.meanings || []).map((m: any, idx: number) => ({
             id: m.id || generateId(`m${idx}`),
             part_of_speech: m.part_of_speech || '',
             zh_definition: m.zh_definition || '',
@@ -475,6 +552,7 @@ export class LLMClient {
             source: m.source || '图片提取',
             remarks: m.remarks || '',
             selected: true,
+            definition_choice: 'zh',
           })),
           recognized_text: parsed.recognized_text || '',
           raw_explanation: parsed.raw_explanation || '',

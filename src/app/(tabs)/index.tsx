@@ -55,7 +55,6 @@ export default function SearchAndRecordScreen() {
   const [chatMessages, setChatMessages] = useState<AIMessage[]>([]);
   const [historyModalVisible, setHistoryModalVisible] = useState(false);
   const [organizeModalVisible, setOrganizeModalVisible] = useState(false);
-  const [saveToDefaultOnly, setSaveToDefaultOnly] = useState(false);
 
   /**
    * Save snapshot to Recent Queries (max 10 FIFO)
@@ -317,6 +316,81 @@ export default function SearchAndRecordScreen() {
   };
 
   /**
+   * In-place toggle meaning selection for notebook saving
+   */
+  const handleToggleMeaningSelected = (meaningId: string) => {
+    if (!currentResult) return;
+    const updatedMeanings = currentResult.meanings.map((m) =>
+      m.id === meaningId ? { ...m, selected: m.selected === false ? true : false } : m
+    );
+    const updatedResult = { ...currentResult, meanings: updatedMeanings };
+    setCurrentResult(updatedResult);
+    if (currentQueryId) {
+      updateQueryHistory(currentQueryId, { query_results: updatedResult });
+    }
+  };
+
+  /**
+   * In-place toggle definition language choice (中英二选一)
+   */
+  const handleToggleDefinitionChoice = (meaningId: string, choice: 'zh' | 'en') => {
+    if (!currentResult) return;
+    const updatedMeanings = currentResult.meanings.map((m) =>
+      m.id === meaningId ? { ...m, definition_choice: choice } : m
+    );
+    const updatedResult = { ...currentResult, meanings: updatedMeanings };
+    setCurrentResult(updatedResult);
+    if (currentQueryId) {
+      updateQueryHistory(currentQueryId, { query_results: updatedResult });
+    }
+  };
+
+  /**
+   * Handle suggestion chip click: immediately search the suggested word
+   */
+  const handleSelectSuggestion = (suggestedWord: string) => {
+    handleSearch({
+      queryType: 'text',
+      text: suggestedWord,
+    });
+  };
+
+  /**
+   * Handle quick save to default notebook directly from view page
+   */
+  const handleOrganizeDefault = async () => {
+    if (!currentResult) return;
+    const selectedMeanings = currentResult.meanings.filter((m) => m.selected !== false);
+    if (selectedMeanings.length === 0) {
+      Alert.alert('提示', '请在查看页面中至少保留一条选中的释义');
+      return;
+    }
+    const finalizedMeanings = selectedMeanings.map((m) => {
+      const choice = m.definition_choice || 'zh';
+      return {
+        ...m,
+        zh_definition: choice === 'en' ? '' : m.zh_definition,
+        en_definition: choice === 'zh' ? '' : m.en_definition,
+      };
+    });
+    await executeSave({
+      word: currentResult.word,
+      meanings: finalizedMeanings,
+      selectedFields: {
+        zh_definition: true,
+        en_definition: true,
+        phonetic: !!currentResult.phonetic,
+        example: true,
+        source: true,
+        source_images: true,
+        annotations: false,
+        remarks: true,
+      },
+      targetNotebookIds: [settings.default_notebook_id],
+    });
+  };
+
+  /**
    * Update AI messages and persist into current query snapshot
    */
   const handleMessagesChange = (newMessages: AIMessage[]) => {
@@ -376,6 +450,20 @@ export default function SearchAndRecordScreen() {
           <InfoView
             result={currentResult}
             onRefreshFromAI={handleAISupplement}
+            onToggleMeaningSelected={handleToggleMeaningSelected}
+            onToggleDefinitionChoice={handleToggleDefinitionChoice}
+            onSelectSuggestion={handleSelectSuggestion}
+            onOpenAssistantWithText={(text) => {
+              setChatMessages([
+                ...chatMessages,
+                {
+                  id: generateId('msg'),
+                  role: 'user',
+                  content: `请帮我深入分析以下英文段落的语法结构、核心考点与高级用法：\n\n${text}`,
+                  created_at: new Date().toISOString(),
+                },
+              ]);
+            }}
           />
         ) : (
           <View style={styles.welcomeBox}>
@@ -391,7 +479,7 @@ export default function SearchAndRecordScreen() {
       </ScrollView>
 
       {/* AI Assistant Sheet (Floating mini-bar, expands to chat or fullscreen) */}
-      {currentResult ? (
+      {currentResult && !currentResult.is_invalid ? (
         <AssistantSheet
           currentQuery={currentResult}
           messages={chatMessages}
@@ -400,27 +488,22 @@ export default function SearchAndRecordScreen() {
       ) : null}
 
       {/* Bottom Organize Bar: [整理笔记] -> [添加到默认笔记] [选择添加笔记] */}
-      {currentResult ? (
+      {currentResult && !currentResult.is_invalid ? (
         <OrganizeBar
           disabled={loading}
-          onOrganizeDefault={() => {
-            setSaveToDefaultOnly(true);
-            setOrganizeModalVisible(true);
-          }}
+          onOrganizeDefault={handleOrganizeDefault}
           onOrganizeCustom={() => {
-            setSaveToDefaultOnly(false);
             setOrganizeModalVisible(true);
           }}
         />
       ) : null}
 
-      {/* Organize Modal with field checkboxes & notebook targets */}
-      {currentResult ? (
+      {/* Organize Modal (Now purely Target Notebook Selector) */}
+      {currentResult && !currentResult.is_invalid ? (
         <OrganizeModal
           visible={organizeModalVisible}
           result={currentResult}
           notebooks={notebooks}
-          saveToDefaultOnly={saveToDefaultOnly}
           onClose={() => setOrganizeModalVisible(false)}
           onConfirmSave={executeSave}
         />

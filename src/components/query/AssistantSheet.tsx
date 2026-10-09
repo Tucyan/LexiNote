@@ -11,13 +11,16 @@ import {
   Platform,
   ActivityIndicator,
   Alert,
+  StatusBar,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { QueryResult, AIMessage } from '@/types';
 import { useTheme } from '@/context/ThemeContext';
 import { useSettings } from '@/context/SettingsContext';
 import { LLMClient, LLMException } from '@/services/llm/client';
 import { generateId } from '@/utils/id';
 import { Ionicons } from '@expo/vector-icons';
+import { MarkdownView } from '../common/MarkdownView';
 
 interface AssistantSheetProps {
   currentQuery: QueryResult | null;
@@ -32,6 +35,8 @@ export function AssistantSheet({
 }: AssistantSheetProps) {
   const { colors, fontScale } = useTheme();
   const { activeProvider, activeApiKey } = useSettings();
+  const insets = useSafeAreaInsets();
+  const safeTopPadding = Math.max(insets.top, Platform.OS === 'android' ? (StatusBar.currentHeight || 24) : 24) + 10;
   const [isExpanded, setIsExpanded] = useState(false);
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [inputText, setInputText] = useState('');
@@ -178,16 +183,21 @@ export function AssistantSheet({
         visible={isExpanded}
         animationType="slide"
         transparent={!isFullScreen}
+        statusBarTranslucent={true}
         onRequestClose={() => setIsExpanded(false)}
       >
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={isFullScreen ? styles.fullScreenContainer : styles.modalBackdrop}
         >
           <View
             style={[
               isFullScreen ? styles.fullScreenContent : styles.sheetContent,
-              { backgroundColor: colors.surface, borderColor: colors.border },
+              {
+                backgroundColor: colors.surface,
+                borderColor: colors.border,
+                paddingTop: isFullScreen ? safeTopPadding : 0,
+              },
             ]}
           >
             {/* Header */}
@@ -290,22 +300,21 @@ export function AssistantSheet({
                             AI 正在思考并组织语言...
                           </Text>
                         </View>
-                      ) : (
+                      ) : m.role === 'user' ? (
                         <Text
                           style={[
                             styles.bubbleText,
                             {
-                              color: m.role === 'user' ? '#FFFFFF' : colors.text,
+                              color: '#FFFFFF',
                               fontSize: 13.5 * fontScale,
                               lineHeight: 20 * fontScale,
                             },
                           ]}
                         >
                           {m.content}
-                          {isCurrentStreaming ? (
-                            <Text style={{ color: colors.primary, fontWeight: '700' }}> ▋</Text>
-                          ) : null}
                         </Text>
+                      ) : (
+                        <MarkdownView content={m.content} isStreaming={isCurrentStreaming} />
                       )}
                     </View>
                   );
@@ -314,7 +323,16 @@ export function AssistantSheet({
             </ScrollView>
 
             {/* Input Bar */}
-            <View style={[styles.inputBar, { borderTopColor: colors.border, backgroundColor: colors.surface }]}>
+            <View
+              style={[
+                styles.inputBar,
+                {
+                  borderTopColor: colors.border,
+                  backgroundColor: colors.surface,
+                  paddingBottom: Math.max(insets.bottom, 12),
+                },
+              ]}
+            >
               <TextInput
                 value={inputText}
                 onChangeText={setInputText}
@@ -479,6 +497,8 @@ const styles = StyleSheet.create({
   },
   assistantBubble: {
     alignSelf: 'flex-start',
+    maxWidth: '96%',
+    width: '96%',
     borderBottomLeftRadius: 4,
     borderWidth: 1,
   },

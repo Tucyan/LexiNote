@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   TextInput,
   Alert,
+  Platform,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useTheme } from '@/context/ThemeContext';
@@ -18,6 +19,7 @@ import { Button } from '@/components/common/Button';
 import { AnnotationModal } from '@/components/notebook/AnnotationModal';
 import { Ionicons } from '@expo/vector-icons';
 import { generateId } from '@/utils/id';
+import { formatPhonetic } from '@/utils/phonetic';
 import { GLOBAL_ROOT_NOTEBOOK_ID } from '@/constants/defaults';
 
 export default function VocabularyDetailScreen() {
@@ -303,7 +305,7 @@ export default function VocabularyDetailScreen() {
               </View>
               {vocab.meanings[0]?.phonetic ? (
                 <Text style={[styles.phoneticText, { color: colors.textSecondary, fontSize: 15 * fontScale }]}>
-                  {vocab.meanings[0].phonetic}
+                  {formatPhonetic(vocab.meanings[0].phonetic)}
                 </Text>
               ) : null}
             </View>
@@ -665,7 +667,7 @@ const styles = StyleSheet.create({
     letterSpacing: -0.5,
   },
   phoneticText: {
-    fontFamily: 'monospace',
+    fontFamily: Platform.OS === 'ios' ? 'System' : 'sans-serif',
     marginTop: 4,
   },
   tagSection: {

@@ -1,10 +1,11 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Platform } from 'react-native';
 import { Vocabulary } from '@/types';
 import { useTheme } from '@/context/ThemeContext';
 import { Card } from '../common/Card';
 import { Badge } from '../common/Badge';
 import { Ionicons } from '@expo/vector-icons';
+import { formatPhonetic } from '@/utils/phonetic';
 
 interface VocabularyItemProps {
   vocabulary: Vocabulary;
@@ -125,7 +126,7 @@ export function VocabularyItem({
               <View style={styles.meaningRow}>
                 {primaryMeaning.phonetic ? (
                   <Text style={[styles.phonetic, { color: colors.textSecondary, fontSize: 12.5 * fontScale }]}>
-                    {primaryMeaning.phonetic}
+                    {formatPhonetic(primaryMeaning.phonetic)}
                   </Text>
                 ) : null}
                 {primaryMeaning.part_of_speech ? (
@@ -199,7 +200,7 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
   },
   phonetic: {
-    fontFamily: 'monospace',
+    fontFamily: Platform.OS === 'ios' ? 'System' : 'sans-serif',
     marginRight: 6,
   },
   pos: {

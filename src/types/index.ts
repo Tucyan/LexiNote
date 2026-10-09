@@ -79,6 +79,30 @@ export interface QueryMeaningDraft {
   source?: string;
   remarks?: string;
   selected?: boolean;
+  definition_choice?: 'zh' | 'en';
+}
+
+export type QueryFeedbackType =
+  | 'misspelling'
+  | 'long_text'
+  | 'irrelevant_content'
+  | 'gibberish'
+  | 'chinese_lookup';
+
+export interface QuerySuggestionItem {
+  word: string;
+  zh_hint?: string;
+  reason?: string;
+}
+
+export interface QueryFeedback {
+  type: QueryFeedbackType;
+  title: string;
+  message: string;
+  original_input: string;
+  suggestions: QuerySuggestionItem[];
+  suggested_words: string[];
+  action_hint?: string;
 }
 
 export interface QueryResult {
@@ -90,6 +114,8 @@ export interface QueryResult {
   raw_explanation?: string;
   is_from_local?: boolean;
   local_vocabulary_id?: string;
+  is_invalid?: boolean;
+  feedback?: QueryFeedback;
 }
 
 export interface SavedStatus {
